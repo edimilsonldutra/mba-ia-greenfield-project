@@ -13,6 +13,10 @@ docker compose ps   # all services must show status "running"
 Then verify each infrastructure service is actually ready to accept connections — not just running:
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
+- **MinIO:** `docker compose exec minio mc ready local` — expect `The cluster is ready`
+- **Redis:** `docker compose exec redis redis-cli ping` — expect `PONG`
+
+The `video-worker` container starts with the infrastructure and waits for `npm install` before running.
 
 Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
 
@@ -33,7 +37,11 @@ docker compose exec nestjs-api npm run start:dev
 
 Services:
 - `nestjs-api` — NestJS API, port `3000`
+- `video-worker` — processing queue consumer (same image and code as `nestjs-api`, no port)
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `minio` — object storage, S3 API on port `9000`, console on port `9001`, user `streamtube`, password `streamtube-secret`
+- `redis` — processing queue (append-only persistence), port `6379`
+- `mailpit` — SMTP on port `1025`, UI on port `8025`
 
 All verification and teardown commands run on the **host machine**:
 
@@ -62,11 +70,13 @@ docker compose down
 npm run start:dev                        # Dev server with hot-reload
 npm run build                            # Compile to dist/
 npm run start:prod                       # Run compiled build
+npm run start:worker                     # Video worker (what the video-worker container runs)
+npm run start:worker:prod                # Video worker from the compiled build
 
-npm test                                 # Unit tests
+npm test                                 # Unit + integration tests (already --runInBand)
 npm run test:watch                       # Unit tests in watch mode
 npm run test:cov                         # Coverage report
-npm run test:e2e                         # End-to-end tests (always with --runInBand)
+npm run test:e2e                         # End-to-end tests (already --runInBand)
 
 npx tsc --noEmit                         # Type-check (required before declaring a task done)
 npm run lint                             # ESLint with auto-fix
@@ -84,14 +94,16 @@ curl http://localhost:3000
 
 ### Test execution
 
-Integration and e2e suites share a single test database. They **must** be run with `--runInBand`:
+Integration and e2e suites share a single test database. They **must** be run with `--runInBand`, which both scripts already pass:
 
 ```bash
-docker compose exec nestjs-api npm test -- --runInBand
-docker compose exec nestjs-api npm run test:e2e   # already configured
+docker compose exec nestjs-api npm test
+docker compose exec nestjs-api npm run test:e2e
 ```
 
 Parallel execution causes FK violations, deadlocks, and cross-suite contamination because suites truncate or seed shared tables concurrently.
+
+Both Jest configurations set `testTimeout` to 60 s: on a cold run over a bind mount (Windows, macOS), loading `AppModule` in the first `beforeAll` exceeds the default 5 s.
 
 During active development, run only the tests related to the file being changed (`npm test -- path/to/file.spec.ts`). Before declaring a task done, run the full suite — see the global `CLAUDE.md` → "Definition of Done (Technical)".
 
@@ -119,7 +131,8 @@ Conventions for **how to write** each kind of test (mocking patterns, AAA struct
 
 These settings are required in `package.json` (jest config) and `test/jest-e2e.json` for the project's tests to work correctly:
 
-- `setupFiles: ["dotenv/config"]` — without this, `.env` is not loaded inside the Jest process. `DB_HOST`, `JWT_SECRET`, etc. fall back to undefined or to the host's `localhost`, breaking container-to-container DNS.
+- `setupFiles` starts with `src/test/setup-env.ts` — it gives the tests their own bucket (`streamtube-test`) and queue prefix, so the `video-worker` container never consumes test jobs, and 5 MiB upload parts. It must come before `dotenv/config`, which does not override variables already set.
+- `setupFiles` also has `"dotenv/config"` — without this, `.env` is not loaded inside the Jest process. `DB_HOST`, `JWT_SECRET`, etc. fall back to undefined or to the host's `localhost`, breaking container-to-container DNS.
 - `testRegex: '.*\\.(spec|integration-spec)\\.ts$'` — covers both unit (`*.spec.ts`) and integration (`*.integration-spec.ts`) suffixes.
 
 Do not add new test-file suffixes; if a new test type is needed, update the regex deliberately.
@@ -148,6 +161,48 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+- Two entrypoints share the code: `src/main.ts` (API, `AppModule`) and `src/worker.ts` (video worker, `WorkerModule`, no HTTP). `DatabaseModule` (`src/database/`) and `QueueModule` (`src/queue/`) hold the root connections used by both
+
+## Videos (Phase 03)
+
+Decisions: `docs/decisions/technical-decisions-phase-03-videos.md`. Contracts: `docs/phases/phase-03-videos/phase-03-videos.md`.
+
+### Flow
+
+1. `POST /videos` registers a `draft` with its unique `slug` and opens a multipart upload. **No file byte passes through the API.**
+2. `POST /videos/:videoId/upload/parts` signs part URLs; the client sends each part to the storage by `PUT`. `GET /videos/:videoId/upload` lists what arrived, to resume.
+3. `POST /videos/:videoId/upload/complete` verifies the parts, assembles the object and, in one transaction, moves the video to `processing` and publishes the job.
+4. The worker extracts duration and metadata (`ffprobe`), stores a thumbnail (`ffmpeg`) and sets `ready` or `failed`. The owner follows it with `GET /videos/:videoId/status`.
+5. `GET /videos/:slug` (details), `/stream`, `/thumbnail` and `/download` are public for `ready` videos. The last three redirect (`302`) to presigned URLs; byte ranges (`206`) are answered by the storage.
+
+### Where things are
+
+| Path | Responsibility |
+|------|----------------|
+| `src/videos/video-uploads.service.ts`, `video-uploads.controller.ts` | Upload lifecycle (draft → processing) |
+| `src/videos/videos.service.ts`, `videos.controller.ts` | Status, details and delivery URLs |
+| `src/videos/entities/video.entity.ts` | `videos` table; `VideoStatus`, `VideoFailureReason` |
+| `src/videos/queue/` | Producer (`VideoProcessingQueue`) and queue constants |
+| `src/videos/processing/` | Consumer (`VideoProcessingProcessor`), `VideoProcessingService`, `MediaService` (FFmpeg) |
+| `src/storage/` | `StorageService`, the only code that talks to S3 |
+| `src/config/{storage,queue,video}.config.ts` | Configuration namespaces |
+
+### Rules
+
+- **Never** accept a file in an API endpoint. Uploads and downloads go straight to the storage through presigned URLs.
+- `StorageService` has two clients: one for calls made by the process (`S3_ENDPOINT`) and one that only signs URLs for browsers (`S3_PUBLIC_ENDPOINT`). The host is part of the signature.
+- Object keys come from `VIDEO_KEYS` (`videos/{id}/source`, `videos/{id}/thumbnail.jpg`). User input is never part of a key.
+- Keep `requestChecksumCalculation: 'WHEN_REQUIRED'` in the S3 clients, or a plain `PUT` to a presigned URL is refused. Do not use `paginateListParts`: it never ends against MinIO.
+- The processor is registered only by `VideoProcessingModule`, imported by `WorkerModule`. Importing it in the API would make every API process consume the queue (`src/worker.module.spec.ts` guards this).
+- Delivery is at-least-once: `VideoProcessingService` only writes while the video is `processing`.
+- `InvalidMediaError` (the file's fault) fails the video at once; any other error is retried 3 times and then fails with `PROCESSING_ERROR`.
+- FFmpeg always runs through `MediaService`, with `INPUT_RESTRICTIONS`: without the demuxer whitelist, an uploaded playlist could make it open other URLs.
+- `ThrottlerGuard` is global: video controllers carry `@SkipThrottle()`.
+
+### Testing
+
+- Nothing of the infrastructure is mocked: tests use the PostgreSQL, MinIO, Redis and FFmpeg of Compose. Helpers live in `src/test/` (`storage.ts`, `queue.ts`, `media.ts`, `factories.ts`, `e2e-app.ts`).
+- A new entity must be added to `ALL_ENTITIES` of the suites, to `cleanAllTables` and to `src/database/migrations.integration-spec.ts` (table and enum types).
 
 ## Code Conventions
 
