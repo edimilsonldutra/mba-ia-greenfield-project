@@ -110,6 +110,30 @@ describe('exportSpec (integration)', () => {
     }
   });
 
+  it.each([
+    ['/videos', 'post', true],
+    ['/videos/{videoId}/upload/parts', 'post', true],
+    ['/videos/{videoId}/upload', 'get', true],
+    ['/videos/{videoId}/upload/complete', 'post', true],
+    ['/videos/{videoId}/status', 'get', true],
+    ['/videos/{slug}', 'get', false],
+    ['/videos/{slug}/stream', 'get', false],
+    ['/videos/{slug}/thumbnail', 'get', false],
+    ['/videos/{slug}/download', 'get', false],
+  ])('documents %s %s (authenticated: %s)', (path, method, authenticated) => {
+    const paths = document.paths as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >;
+    const operation = paths[path]?.[method];
+
+    expect(operation?.summary).toBeTruthy();
+    expect(operation.tags).toEqual(['videos']);
+    expect('security' in operation).toBe(authenticated);
+    expect('401' in (operation.responses as object)).toBe(authenticated);
+    expect(operation.responses).toHaveProperty('404');
+  });
+
   it('all auth endpoints have a non-empty summary', () => {
     const paths = document.paths as Record<
       string,
