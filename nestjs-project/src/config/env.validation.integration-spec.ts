@@ -6,6 +6,8 @@ const requiredEnv = {
   DB_NAME: 'db',
   JWT_SECRET: 'secret',
   JWT_REFRESH_SECRET: 'refresh-secret',
+  S3_ACCESS_KEY: 'access',
+  S3_SECRET_KEY: 'secret',
 };
 
 const validate = (env: Record<string, string>) =>
@@ -35,5 +37,35 @@ describe('envValidationSchema — SWAGGER_ENABLED', () => {
     const { value, error } = validate({});
     expect(error).toBeUndefined();
     expect(value.SWAGGER_ENABLED).toBe('false');
+  });
+});
+
+describe('envValidationSchema — storage, queue and video', () => {
+  it.each(['S3_ACCESS_KEY', 'S3_SECRET_KEY'])('should require %s', (name) => {
+    const { error } = envValidationSchema.validate(
+      { ...requiredEnv, [name]: undefined },
+      { allowUnknown: true, abortEarly: false },
+    );
+    expect(error!.message).toContain(name);
+  });
+
+  it('should apply the Compose service names as defaults', () => {
+    const { value } = validate({});
+    expect(value).toMatchObject({
+      S3_ENDPOINT: 'http://minio:9000',
+      S3_BUCKET: 'streamtube',
+      REDIS_HOST: 'redis',
+      REDIS_PORT: 6379,
+      QUEUE_PREFIX: 'streamtube',
+    });
+  });
+
+  it('should default to 64 MiB parts', () => {
+    expect(validate({}).value.VIDEO_PART_SIZE_BYTES).toBe(64 * 1024 * 1024);
+  });
+
+  it('should reject a part size below the S3 minimum', () => {
+    const { error } = validate({ VIDEO_PART_SIZE_BYTES: '1024' });
+    expect(error!.message).toContain('VIDEO_PART_SIZE_BYTES');
   });
 });
