@@ -39,6 +39,50 @@ export class TokenExpiredException extends DomainException {
   }
 }
 
+export class ChannelNotFoundException extends DomainException {
+  constructor() {
+    super('CHANNEL_NOT_FOUND', 404, 'Channel not found');
+  }
+}
+
+export class VideoNotFoundException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_FOUND', 404, 'Video not found');
+  }
+}
+
+export class InvalidPartNumberException extends DomainException {
+  constructor() {
+    super('INVALID_PART_NUMBER', 400, 'Part number is outside the upload plan');
+  }
+}
+
+export class UploadIncompleteException extends DomainException {
+  constructor() {
+    super(
+      'UPLOAD_INCOMPLETE',
+      409,
+      'Upload is incomplete or does not match the declared size',
+    );
+  }
+}
+
+export class ProcessingUnavailableException extends DomainException {
+  constructor() {
+    super(
+      'PROCESSING_UNAVAILABLE',
+      503,
+      'Video processing is unavailable, try again later',
+    );
+  }
+}
+
+export class UploadAlreadyCompletedException extends DomainException {
+  constructor() {
+    super('UPLOAD_ALREADY_COMPLETED', 409, 'Upload was already completed');
+  }
+}
+
 export class TokenReuseDetectedException extends DomainException {
   constructor() {
     super(
