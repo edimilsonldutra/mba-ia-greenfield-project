@@ -23,7 +23,7 @@ Deliver video upload of files up to 10 GB sent directly to the object storage, a
 
 **Technical actions:**
 
-1. Fix `src/database/migrations.integration-spec.ts` — also drop the enum types owned by the migrations before running them, so the suite passes on a database that was already migrated
+1. Fix `src/database/migrations.integration-spec.ts` — also drop the enum types owned by the migrations before running them, so the suite passes on a database that was already migrated, and drop the tables one at a time, dependents first, since parallel `DROP ... CASCADE` statements deadlock
 2. Update `eslint.config.mjs` — for test files only (`*.spec.ts`, `*.integration-spec.ts`, `*.e2e-spec.ts`, `src/test/**`), turn off the `no-unsafe-*`, `unbound-method` and `require-await` rules, which conflict with Jest mocks and untyped `supertest` bodies; application code keeps every rule
 3. Fix the remaining errors in code: type the PostgreSQL error in `src/channels/channels.service.ts`, the entity parameter in `src/test/create-test-data-source.ts`, and the unused variables
 4. Quote `MAIL_FROM` in `.env.example`, which Docker Compose refuses to parse unquoted

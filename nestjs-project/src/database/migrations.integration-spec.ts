@@ -41,12 +41,14 @@ describe('Database migrations (integration)', () => {
 
     await dataSource.initialize();
 
-    await Promise.all([
-      ...MANAGED_TABLES.map((table) =>
-        dataSource.query(`DROP TABLE IF EXISTS "${table}" CASCADE`),
-      ),
-      dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`),
-    ]);
+    // One table at a time, dependents first: dropped in parallel, each DROP ...
+    // CASCADE locks the tables chained to it (videos -> channels -> users) in a
+    // different order on its own connection, and PostgreSQL aborts one of them
+    // with "deadlock detected".
+    for (const table of [...MANAGED_TABLES].reverse()) {
+      await dataSource.query(`DROP TABLE IF EXISTS "${table}" CASCADE`);
+    }
+    await dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`);
     // Enum types outlive their tables: without this, a database that was
     // already migrated refuses to run the migrations again.
     for (const type of MANAGED_TYPES) {
