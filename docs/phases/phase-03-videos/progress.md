@@ -6,7 +6,7 @@
 ### SI-03.1 — Restore the Inherited Baseline
 - **Status:** completed
 - **Tests:** full inherited suite green twice in a row on the same database (144 unit/integration, 52 E2E); `npm run lint` from 150 errors to 0; `npx tsc --noEmit` 0
-- **Observations:** `migrations.integration-spec.ts` failed on any database already migrated, because dropping the tables leaves the enum type behind. Of the 150 lint errors, 143 were in test files (Jest mocks and untyped supertest bodies) and 7 in code, which were fixed instead of silenced. `test` and `test:e2e` now pass `--runInBand` themselves. The final check on a clean clone, with `node_modules` on a Windows bind mount, failed with the default Jest timeout of 5 s (4 unit/integration and 43 E2E tests, all in a first `beforeAll`); `testTimeout` was set to 60 s in both configurations.
+- **Observations:** `migrations.integration-spec.ts` failed on any database already migrated, because dropping the tables leaves the enum type behind. Of the 150 lint errors, 143 were in test files (Jest mocks and untyped supertest bodies) and 7 in code, which were fixed instead of silenced. `test` and `test:e2e` now pass `--runInBand` themselves. A later review found a second inherited fault in the same spec: its `beforeAll` dropped every table in parallel (`Promise.all`), and the `DROP ... CASCADE` statements locked the chain videos → channels → users in opposite orders on different connections, so PostgreSQL aborted one with `deadlock detected` (3 failing tests). It was intermittent — 4 of 15 runs of the spec alone on a clean stack — which is why the earlier runs passed. The tables are now dropped one at a time, dependents first: 30 of 30 runs passed. The final check on a clean clone, with `node_modules` on a Windows bind mount, failed with the default Jest timeout of 5 s (4 unit/integration and 43 E2E tests, all in a first `beforeAll`); `testTimeout` was set to 60 s in both configurations.
 
 ### SI-03.2 — Provision Storage, Queue and Media Tools
 - **Status:** completed
@@ -55,7 +55,7 @@
 
 ### SI-03.11 — Prove the Full Flow and Update the Documentation
 - **Status:** completed
-- **Tests:** 3/3 passing (videos-flow.e2e-spec.ts); full suite: 280 unit/integration (35 suites) and 96 E2E (5 suites); `npx tsc --noEmit` 0; `npm run lint` 0; `npm run build` ok. Same numbers on a clean git clone, from a cold start
+- **Tests:** 3/3 passing (videos-flow.e2e-spec.ts); full suite: 280 unit/integration (35 suites) and 96 E2E (5 suites); `npx tsc --noEmit` 0; `npm run lint` 0; `npm run build` ok. After the fix to the parallel drops (SI-03.1), the full suite passed 280/280 on three clean stack-ups in a row (`docker compose down -v`, `up`, `migration:run`, `npm test`), with no deadlock
 - **Observations:** a real file of exactly 10 GiB (10,737,418,240 bytes) was uploaded to the running stack, in 160 parts of 64 MiB:
 
 | Step | Result |
